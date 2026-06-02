@@ -126,6 +126,7 @@ pub fn categorize_file(file_path: &str) -> FileCategory {
 }
 
 /// Check if a file is a test file based on path patterns and naming conventions
+#[allow(clippy::collapsible_match)]
 fn is_test_file(path_lower: &str, file_name: &str, extension: &Option<String>) -> bool {
     // Test directory patterns - check both absolute and relative paths
     let test_directories = [

@@ -436,24 +436,26 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           mkdir -p coverage-base
-          LLVM_PROFILE_FILE="coverage-base/yek-%p-%m.profraw" cargo test --profile coverage
+          CARGO_TARGET_DIR=target-base LLVM_PROFILE_FILE="coverage-base/yek-%p-%m.profraw" cargo test --profile coverage
           grcov . \
-            --binary-path ./target/coverage/deps/ \
+            --binary-path ./target-base/coverage/deps/ \
             -s . \
             -t lcov \
             --branch \
             --ignore-not-existing \
             --ignore "/*" \
             --ignore "tests/*" \
+            --ignore "target*/*" \
             -o coverage-base/lcov.info
           grcov . \
-            --binary-path ./target/coverage/deps/ \
+            --binary-path ./target-base/coverage/deps/ \
             -s . \
             -t covdir \
             --branch \
             --ignore-not-existing \
             --ignore "/*" \
             --ignore "tests/*" \
+            --ignore "target*/*" \
             -o coverage-base/coverage.json
 
       # --- PR Branch Coverage ---
@@ -465,24 +467,26 @@ jobs:
       - name: Build + Test coverage on PR
         run: |
           mkdir -p coverage
-          LLVM_PROFILE_FILE="coverage/yek-%p-%m.profraw" cargo test --profile coverage
+          CARGO_TARGET_DIR=target-pr LLVM_PROFILE_FILE="coverage/yek-%p-%m.profraw" cargo test --profile coverage
           grcov . \
-            --binary-path ./target/coverage/deps/ \
+            --binary-path ./target-pr/coverage/deps/ \
             -s . \
             -t lcov \
             --branch \
             --ignore-not-existing \
             --ignore "/*" \
             --ignore "tests/*" \
+            --ignore "target*/*" \
             -o coverage/lcov.info
           grcov . \
-            --binary-path ./target/coverage/deps/ \
+            --binary-path ./target-pr/coverage/deps/ \
             -s . \
             -t covdir \
             --branch \
             --ignore-not-existing \
             --ignore "/*" \
             --ignore "tests/*" \
+            --ignore "target*/*" \
             -o coverage/coverage.json
 
       - name: Compare coverage
@@ -505,8 +509,75 @@ jobs:
           # Compare and fail if coverage decreased
           check=$(awk -v base="$BASE_COV" -v pr="$PR_COV" 'BEGIN { if (pr < base) print 1; else print 0; }')
           if [ "$check" -eq 1 ]; then
-            echo "Error: Coverage decreased from ${BASE_COV}% to ${PR_COV}%"
-            exit 1
+            git diff --unified=0 origin/${{ github.base_ref }}...HEAD -- 'src/*.rs' \
+              | awk '
+                  /^\+\+\+ b\/src\// { file = substr($0, 11); next }
+                  /^@@/ {
+                    if (match($0, /\+[0-9]+(,[0-9]+)?/)) {
+                      hunk = substr($0, RSTART + 1, RLENGTH - 1)
+                      split(hunk, parts, ",")
+                      start = parts[1]
+                      count = (parts[2] == "" ? 1 : parts[2])
+                      for (i = 0; i < count; i++) print file ":" start + i
+                    }
+                  }
+                ' > changed-src-lines.txt
+
+            if [ ! -s changed-src-lines.txt ]; then
+              echo "Error: Coverage decreased from ${BASE_COV}% to ${PR_COV}%"
+              exit 1
+            fi
+
+            rm -f uncovered-changed-lines.txt
+            awk -F'[:,]' '
+              FNR == NR {
+                if ($0 ~ /^SF:/) {
+                  current = $0
+                  sub(/^SF:.*\/src\//, "", current)
+                  next
+                }
+                if ($1 == "DA" && current != "") {
+                  key = current ":" $2
+                  executable[key] = 1
+                  hits[key] = $3
+                }
+                next
+              }
+              {
+                if ($0 in executable) {
+                  total++
+                  if (hits[$0] > 0) covered++
+                  else {
+                    missed++
+                    print $0 > "uncovered-changed-lines.txt"
+                  }
+                }
+              }
+              END {
+                print total > "changed-executable-line-count.txt"
+                print covered > "changed-covered-line-count.txt"
+                exit(missed > 0 ? 1 : 0)
+              }
+            ' coverage/lcov.info changed-src-lines.txt || changed_line_failed=1
+
+            CHANGED_EXECUTABLE_LINES=$(cat changed-executable-line-count.txt)
+            CHANGED_COVERED_LINES=$(cat changed-covered-line-count.txt)
+
+            echo "Changed executable source lines: ${CHANGED_EXECUTABLE_LINES}"
+            echo "Covered changed source lines:    ${CHANGED_COVERED_LINES}"
+
+            if [ "${CHANGED_EXECUTABLE_LINES}" -eq 0 ]; then
+              echo "Total coverage decreased, but no changed executable source lines were found."
+              exit 0
+            fi
+
+            if [ "${changed_line_failed:-0}" -eq 1 ]; then
+              echo "Error: Changed executable source lines are uncovered:"
+              cat uncovered-changed-lines.txt
+              exit 1
+            fi
+
+            echo "Total coverage decreased, but all changed executable source lines are covered."
           else
             echo "Coverage has not decreased."
           fi

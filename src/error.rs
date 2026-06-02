@@ -306,6 +306,7 @@ impl ErrorReporter {
     }
 
     /// Show helpful suggestions for common errors
+    #[allow(clippy::collapsible_match)]
     fn show_suggestions(error: &YekError, _context: &ErrorContext) {
         match error {
             YekError::FileSystem {

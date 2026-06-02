@@ -40,8 +40,14 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Test installation script
-        shell: ${{ matrix.shell }}
+      - name: Test installation script (Unix)
+        if: matrix.shell == 'bash'
+        shell: bash
+        run: ${{ steps.get_install_script.outputs.script }}
+
+      - name: Test installation script (Windows)
+        if: matrix.shell == 'pwsh'
+        shell: pwsh
         run: ${{ steps.get_install_script.outputs.script }}
 
       - name: Verify final installation
